@@ -16,6 +16,7 @@ Crypteia combines blockchain transparency with privacy, creating a digital sanct
 - **Privacy Preserved**: Message contents remain confidential
 - **Bitcoin Security**: Inherits Bitcoin's security through Stacks settlement
 - **Multi-Signature Messages**: Require multiple signatures to decrypt sensitive communications
+- **Group Chat Encryption**: End-to-end encrypted group conversations with key rotation
 
 ## Architecture
 
@@ -68,12 +69,37 @@ clarinet deploy
 - `get-multisig-signers`: Gets authorized signers for a message
 - `has-user-signed`: Checks if a user has signed a specific message
 
+### Group Chat Functions
+- `create-group-chat`: Creates an encrypted group chat with up to 20 members
+- `send-group-message`: Sends an encrypted message to a group
+- `rotate-group-key`: Rotates the encryption key for enhanced security
+- `get-group-info`: Retrieves group chat metadata
+- `get-group-members`: Gets list of group members
+- `get-group-message`: Retrieves a specific group message
+- `get-group-message-count`: Gets total messages in a group
+- `is-user-group-member`: Checks if a user is a member of a group
+- `get-key-rotation-info`: Gets information about key rotation events
+
 ## Multi-Signature Workflow
 
 1. **Create**: Initiate a multi-sig message with required signature threshold
 2. **Authorize**: Define list of authorized signers (up to 10)
 3. **Sign**: Authorized parties sign the message individually
 4. **Complete**: Message becomes accessible once threshold is met
+
+## Group Chat Workflow
+
+1. **Create Group**: Initialize a group chat with a name and up to 20 members
+2. **Send Messages**: Members send encrypted messages to the group
+3. **Key Rotation**: Any member can rotate the encryption key for forward secrecy
+4. **Message History**: All messages are timestamped and linked to key versions
+
+### Group Chat Security Features
+
+- **Forward Secrecy**: Key rotation ensures past messages remain secure even if current keys are compromised
+- **Member Verification**: All members are validated and tracked on-chain
+- **Key Version Tracking**: Each message is linked to a specific key version
+- **Immutable Audit Trail**: All key rotations are recorded with timestamp and initiator
 
 ## Security Considerations
 
@@ -82,14 +108,6 @@ clarinet deploy
 - Only cryptographic hashes and timestamps are stored on-chain
 - Multi-signature messages require consensus from authorized parties
 - Maximum of 10 authorized signers per multi-signature message
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make meaningful commits
-4. Submit a pull request
-
----
-
-*Crypteia: Where privacy meets transparency.*
+- Group chats support up to 20 members with automatic key rotation
+- Key rotation provides forward secrecy for group conversations
+- Each key rotation is permanently recorded on-chain for transparency

@@ -12,12 +12,18 @@
 (define-constant err-insufficient-signatures (err u106))
 (define-constant err-invalid-threshold (err u107))
 (define-constant err-max-signers-exceeded (err u108))
+(define-constant err-group-not-found (err u109))
+(define-constant err-not-group-member (err u110))
+(define-constant err-invalid-group-size (err u111))
+(define-constant err-key-rotation-failed (err u112))
 
 ;; Data Variables
 (define-data-var total-messages uint u0)
 (define-data-var total-multisig-messages uint u0)
-(define-data-var contract-version uint u2)
+(define-data-var total-group-chats uint u0)
+(define-data-var contract-version uint u3)
 (define-constant max-signers u10)
+(define-constant max-group-members u20)
 
 ;; Data Maps
 (define-map messages
@@ -55,6 +61,54 @@
   { signers: (list 10 principal) }
 )
 
+(define-map group-chats
+  { group-id: uint }
+  {
+    creator: principal,
+    group-name: (string-ascii 64),
+    created-at: uint,
+    block-height: uint,
+    active: bool,
+    current-key-version: uint,
+    member-count: uint
+  }
+)
+
+(define-map group-members
+  { group-id: uint }
+  { members: (list 20 principal) }
+)
+
+(define-map group-messages
+  { group-id: uint, message-index: uint }
+  {
+    sender: principal,
+    message-hash: (buff 32),
+    timestamp: uint,
+    block-height: uint,
+    key-version: uint
+  }
+)
+
+(define-map group-message-count
+  { group-id: uint }
+  { count: uint }
+)
+
+(define-map group-key-rotations
+  { group-id: uint, key-version: uint }
+  {
+    rotated-by: principal,
+    rotation-timestamp: uint,
+    rotation-block: uint
+  }
+)
+
+(define-map user-groups
+  { user: principal, group-id: uint }
+  { is-member: bool, joined-at: uint }
+)
+
 (define-map user-message-count
   { user: principal }
   { count: uint }
@@ -79,10 +133,10 @@
 
 (define-private (increment-user-count (user principal))
   (let ((current-count (default-to u0 (get count (map-get? user-message-count { user: user })))))
-    (map-set user-message-count 
+    (ok (map-set user-message-count 
       { user: user }
       { count: (+ current-count u1) }
-    )
+    ))
   )
 )
 
@@ -102,6 +156,23 @@
       false
     )
   )
+)
+
+(define-private (is-group-member (group-id uint) (user principal))
+  (let ((member-data (map-get? user-groups { user: user, group-id: group-id })))
+    (match member-data
+      data (get is-member data)
+      false
+    )
+  )
+)
+
+(define-private (check-valid-principal (principal-to-check principal) (acc bool))
+  (and acc (is-valid-principal principal-to-check))
+)
+
+(define-private (is-valid-group-name (name (string-ascii 64)))
+  (and (> (len name) u0) (<= (len name) u64))
 )
 
 ;; Public Functions
@@ -142,7 +213,7 @@
     
     ;; Update counters
     (var-set total-messages message-id)
-    (increment-user-count tx-sender)
+    (unwrap-panic (increment-user-count tx-sender))
     
     ;; Return message ID
     (ok message-id)
@@ -192,7 +263,7 @@
     
     ;; Update counter
     (var-set total-multisig-messages multisig-id)
-    (increment-user-count tx-sender)
+    (unwrap-panic (increment-user-count tx-sender))
     
     (ok multisig-id)
   )
@@ -234,6 +305,165 @@
   )
 )
 
+;; Create encrypted group chat
+(define-public (create-group-chat 
+  (group-name (string-ascii 64))
+  (members (list 20 principal)))
+  (let
+    (
+      (group-id (+ (var-get total-group-chats) u1))
+      (current-block stacks-block-height)
+      (members-count (len members))
+    )
+    ;; Validate inputs
+    (asserts! (is-valid-group-name group-name) err-invalid-message)
+    (asserts! (> members-count u1) err-invalid-group-size)
+    (asserts! (<= members-count max-group-members) err-invalid-group-size)
+    (asserts! (fold check-valid-principal members true) err-invalid-recipient)
+    
+    ;; Store group chat
+    (map-set group-chats
+      { group-id: group-id }
+      {
+        creator: tx-sender,
+        group-name: group-name,
+        created-at: stacks-block-height,
+        block-height: current-block,
+        active: true,
+        current-key-version: u1,
+        member-count: members-count
+      }
+    )
+    
+    ;; Store group members
+    (map-set group-members
+      { group-id: group-id }
+      { members: members }
+    )
+    
+    ;; Initialize message count
+    (map-set group-message-count
+      { group-id: group-id }
+      { count: u0 }
+    )
+    
+    ;; Initialize key rotation
+    (map-set group-key-rotations
+      { group-id: group-id, key-version: u1 }
+      {
+        rotated-by: tx-sender,
+        rotation-timestamp: stacks-block-height,
+        rotation-block: current-block
+      }
+    )
+    
+    ;; Add all members to user-groups map
+    (add-members-to-group group-id members stacks-block-height)
+    
+    ;; Update counters
+    (var-set total-group-chats group-id)
+    (unwrap-panic (increment-user-count tx-sender))
+    
+    (ok group-id)
+  )
+)
+
+;; Helper function to add members to group
+(define-private (add-members-to-group (group-id uint) (members (list 20 principal)) (timestamp uint))
+  (fold add-single-member members { group-id: group-id, timestamp: timestamp, success: true })
+)
+
+;; Helper to add a single member
+(define-private (add-single-member 
+  (member principal) 
+  (context { group-id: uint, timestamp: uint, success: bool }))
+  (begin
+    (map-set user-groups
+      { user: member, group-id: (get group-id context) }
+      { is-member: true, joined-at: (get timestamp context) }
+    )
+    context
+  )
+)
+
+;; Send message to group chat
+(define-public (send-group-message (group-id uint) (message-hash (buff 32)))
+  (let
+    (
+      (group-data (unwrap! (map-get? group-chats { group-id: group-id }) err-group-not-found))
+      (message-count-data (unwrap! (map-get? group-message-count { group-id: group-id }) err-group-not-found))
+      (current-count (get count message-count-data))
+      (new-message-index (+ current-count u1))
+      (current-block stacks-block-height)
+      (current-key-version (get current-key-version group-data))
+      (is-active (get active group-data))
+    )
+    ;; Validate inputs
+    (asserts! (> group-id u0) err-invalid-message)
+    (asserts! (is-valid-hash message-hash) err-invalid-hash)
+    (asserts! is-active err-unauthorized)
+    (asserts! (is-group-member group-id tx-sender) err-not-group-member)
+    
+    ;; Store group message
+    (map-set group-messages
+      { group-id: group-id, message-index: new-message-index }
+      {
+        sender: tx-sender,
+        message-hash: message-hash,
+        timestamp: stacks-block-height,
+        block-height: current-block,
+        key-version: current-key-version
+      }
+    )
+    
+    ;; Update message count
+    (map-set group-message-count
+      { group-id: group-id }
+      { count: new-message-index }
+    )
+    
+    ;; Update user count
+    (unwrap-panic (increment-user-count tx-sender))
+    
+    (ok new-message-index)
+  )
+)
+
+;; Rotate group encryption key
+(define-public (rotate-group-key (group-id uint))
+  (let
+    (
+      (group-data (unwrap! (map-get? group-chats { group-id: group-id }) err-group-not-found))
+      (current-key-version (get current-key-version group-data))
+      (new-key-version (+ current-key-version u1))
+      (current-block stacks-block-height)
+      (is-active (get active group-data))
+    )
+    ;; Validate inputs
+    (asserts! (> group-id u0) err-invalid-message)
+    (asserts! is-active err-unauthorized)
+    (asserts! (is-group-member group-id tx-sender) err-not-group-member)
+    
+    ;; Update group with new key version
+    (map-set group-chats
+      { group-id: group-id }
+      (merge group-data { current-key-version: new-key-version })
+    )
+    
+    ;; Record key rotation
+    (map-set group-key-rotations
+      { group-id: group-id, key-version: new-key-version }
+      {
+        rotated-by: tx-sender,
+        rotation-timestamp: stacks-block-height,
+        rotation-block: current-block
+      }
+    )
+    
+    (ok new-key-version)
+  )
+)
+
 ;; Verify message integrity
 (define-public (verify-message (message-id uint) (provided-hash (buff 32)))
   (let 
@@ -271,11 +501,6 @@
   )
 )
 
-;; Helper function for validating principals
-(define-private (check-valid-principal (principal-to-check principal) (acc bool))
-  (and acc (is-valid-principal principal-to-check))
-)
-
 ;; Read-only Functions
 
 ;; Get message information
@@ -311,6 +536,57 @@
   )
 )
 
+;; Get group chat information
+(define-read-only (get-group-info (group-id uint))
+  (begin
+    (asserts! (> group-id u0) err-invalid-message)
+    (ok (map-get? group-chats { group-id: group-id }))
+  )
+)
+
+;; Get group members
+(define-read-only (get-group-members (group-id uint))
+  (begin
+    (asserts! (> group-id u0) err-invalid-message)
+    (ok (map-get? group-members { group-id: group-id }))
+  )
+)
+
+;; Get group message
+(define-read-only (get-group-message (group-id uint) (message-index uint))
+  (begin
+    (asserts! (> group-id u0) err-invalid-message)
+    (asserts! (> message-index u0) err-invalid-message)
+    (ok (map-get? group-messages { group-id: group-id, message-index: message-index }))
+  )
+)
+
+;; Get group message count
+(define-read-only (get-group-message-count (group-id uint))
+  (begin
+    (asserts! (> group-id u0) err-invalid-message)
+    (ok (default-to u0 (get count (map-get? group-message-count { group-id: group-id }))))
+  )
+)
+
+;; Check if user is group member
+(define-read-only (is-user-group-member (group-id uint) (user principal))
+  (begin
+    (asserts! (> group-id u0) err-invalid-message)
+    (asserts! (is-valid-principal user) err-invalid-recipient)
+    (ok (is-group-member group-id user))
+  )
+)
+
+;; Get key rotation info
+(define-read-only (get-key-rotation-info (group-id uint) (key-version uint))
+  (begin
+    (asserts! (> group-id u0) err-invalid-message)
+    (asserts! (> key-version u0) err-invalid-message)
+    (ok (map-get? group-key-rotations { group-id: group-id, key-version: key-version }))
+  )
+)
+
 ;; Get messages sent by user
 (define-read-only (get-user-message-count (user principal))
   (begin
@@ -327,6 +603,11 @@
 ;; Get total multisig messages
 (define-read-only (get-total-multisig-messages)
   (ok (var-get total-multisig-messages))
+)
+
+;; Get total group chats
+(define-read-only (get-total-group-chats)
+  (ok (var-get total-group-chats))
 )
 
 ;; Get contract version
